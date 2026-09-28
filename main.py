@@ -1,171 +1,150 @@
-import time
-import requests
-import threading
-import random
-from telebot import TeleBot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import logging
+import os
+import re
+import asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
+from groq import Groq
+from gtts import gTTS
 
-# আপনার বটের টোকেন এবং স্টিকার ফাইল আইডি এখানে দিন
-TOKEN = "8605922971:AAF8b0wQ0fVd4EF4G5nnB6INBvPKsTukBv8"
-STICKER_FILE_ID = "YOUR_STICKER_FILE_ID" 
-bot = TeleBot(TOKEN)
+# লগিং সেটআপ
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# API Endpoints
-APIS = {
-    '30S': 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
-    '1M': 'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json'
-}
+# আপনার টোকেন এবং এপিআই কি
+TELEGRAM_BOT_TOKEN = "8971767093:AAERqhkpcP3bCsOdl-e8NRJAd-b0x0igPUA"
+GROQ_API_KEY = "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"
 
-# Game Data & Auto-Running State
-game_state = {
-    '30S': {'period': 'SYNCING...', 'pred': '--', 'history': [], 'wins': 0, 'losses': 0, 'active': False, 'step': 0},
-    '1M': {'period': 'SYNCING...', 'pred': '--', 'history': [], 'wins': 0, 'losses': 0, 'active': False, 'step': 0}
-}
+# Groq ক্লায়েন্ট ইনিশিয়ালাইজ করুন
+client = Groq(api_key=GROQ_API_KEY)
 
-def get_custom_prediction(mode):
-    """আপনার নির্ধারিত লজিক অনুযায়ী প্রেডিকশন নির্ধারণ করবে"""
-    state = game_state[mode]
-    
-    if mode == '30S':
-        # ৩০ সেকেন্ড লজিক: ২টি Big, ১টি Random, ৩টি Small
-        sequence = ["BIG", "BIG", random.choice(["BIG", "SMALL"]), "SMALL", "SMALL", "SMALL"]
-    else:
-        # ১ মিনিট লজিক: ৩টি Small, ১টি Random, ৩টি Big
-        sequence = ["SMALL", "SMALL", "SMALL", random.choice(["BIG", "SMALL"]), "BIG", "BIG", "BIG"]
-    
-    pred = sequence[state['step'] % len(sequence)]
-    state['step'] += 1
-    return pred
-
-def background_fetcher(mode):
-    while True:
-        try:
-            r = requests.get(f"{APIS[mode]}?t={int(time.time()*1000)}", timeout=5)
-            d = r.json()
-            list_data = d['data']['list']
-            
-            next_period = str(int(list_data[0]['issueNumber']) + 1)
-            pred = get_custom_prediction(mode)
-            
-            state = game_state[mode]
-            state['period'] = next_period[-4:]
-            state['pred'] = pred
-            
-            if not any(h['period'] == next_period[-4:] for h in state['history']):
-                state['history'].insert(0, {'period': next_period[-4:], 'pred': pred, 'res': 'WAITING', 'status': '⏳'})
-                if len(state['history']) > 30:
-                    state['history'].pop()
-            
-            actual_res = int(list_data[0]['number'])
-            for h in state['history']:
-                if h['period'] == list_data[0]['issueNumber'][-4:] and h['res'] == 'WAITING':
-                    h['res'] = actual_res
-                    
-                    # Win এবং Loss ট্র্যাকিং
-                    is_big_res = actual_res >= 5
-                    is_big_pred = h['pred'] == 'BIG'
-                    if is_big_pred == is_big_res:
-                        h['status'] = '✅ WIN'
-                        state['wins'] += 1
-                    else:
-                        h['status'] = '❌ LOSS'
-                        state['losses'] += 1
-        except Exception:
-            pass
-        time.sleep(2 if mode == '30S' else 5)
-
-# ব্যাকগ্রাউন্ড থ্রেড রান করা
-threading.Thread(target=background_fetcher, args=('30S',), daemon=True).start()
-threading.Thread(target=background_fetcher, args=('1M',), daemon=True).start()
-
-@bot.message_handler(commands=['start'])
-def start_bot(message):
-    # চ্যাটের নিচে রিপ্লাই কিবোর্ড বাটন তৈরি
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(
-        KeyboardButton("🚀 Start WinGo 30S"),
-        KeyboardButton("🚀 Start WinGo 1M"),
-        KeyboardButton("⏹️ Stop WinGo 30S"),
-        KeyboardButton("⏹️ Stop WinGo 1M"),
-        KeyboardButton("📊 30S History & Stats"),
-        KeyboardButton("📊 1M History & Stats")
+# টেক্সট থেকে ইমোজি রিমুভ করার ফাংশন যাতে ভয়েসে ইমোজি না পড়ে
+def remove_emojis(text):
+    emoji_pattern = re.compile(
+        r"["
+        r"\U0001f1e0-\U0001f1ff"  # flags (iOS)
+        r"\U0001f300-\U0001f5ff"  # symbols & pictographs
+        r"\U0001f600-\U0001f64f"  # emoticons
+        r"\U0001f680-\U0001f6ff"  # transport & map symbols
+        r"\U0001f700-\U0001f77f"  # alchemical symbols
+        r"\U0001f780-\U0001f7ff"  # Geometric Shapes Extended
+        r"\U0001f800-\U0001f8ff"  # Supplemental Arrows-C
+        r"\U0001f900-\U0001f9ff"  # Supplemental Symbols and Pictographs
+        r"\U0001fa00-\U0001fa6f"  # Chess Symbols
+        r"\U0001fa70-\U0001faff"  # Symbols and Pictographs Extended-A
+        r"\U00020000-\U0002a6ff"
+        r"\U0002a700-\U0002b73f"
+        r"\U0002b740-\U0002b81f"
+        r"\U0002b820-\U0002ceaf"
+        r"\U0002f800-\U0002fa1f"
+        r"\u0023-\u0039"
+        r"\u00a9\u00ae\u203c\u2045\u20cb\u2122\u2139\u3030"
+        r"\u2150-\u2199\u21a0-\u21f9\u2200-\u22ff"
+        r"\u2300-\u23ff\u2400-\u243f\u2440-\u244a\u2460-\u24ff"
+        r"\u2500-\u257f\u2580-\u259f\u25a0-\u25ff"
+        r"\u2600-\u26ff\u2700-\u27bf"
+        r"\u2800-\u28ff"
+        r"\u2900-\u297f\u2a00-\u2aff\u2b00-\u2bff"
+        r"\u3200-\u32ff\u3300-\u33ff"
+        r"]+", flags=re.UNICODE
     )
-    text = (
-        "🤖 **ANTOR VIP PREDICTION BOT** 🤖\n\n"
-        "Welcome Boss! Select a mode from the keyboard below. "
-        "Auto predictions will run continuously based on exact timing!"
+    return emoji_pattern.sub(r'', text)
+
+# নতুন ইউজার বোট স্টার্ট করলে সুন্দর ও আকর্ষণীয় টেক্সট এবং ভয়েস ওয়েলকাম মেসেজ পাঠানো
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text_clean = "স্বাগতম! আমি আপনার ডেডিকেটেড এআই অ্যাসিস্ট্যান্ট। কোডিং বা যেকোনো সমস্যায় আমাকে নির্দ্বিধায় বলতে পারেন। আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
+    
+    welcome_message = (
+        "<b>🤖 AI Assistant</b>\n\n"
+        "👋 স্বাগতম! আমি আপনার ডেডিকেটেড এআই অ্যাসিস্ট্যান্ট।\n\n"
+        "💻 কোডিং, 🛠️ টেকনিক্যাল সমস্যা সমাধান কিংবা 🧠 যেকোনো প্রশ্ন—যেকোনো প্রয়োজনে আমাকে নির্দ্বিধায় বলতে পারেন। বলুন, আজ আপনাকে কীভাবে সাহায্য করতে পারি? 🚀✨"
     )
-    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+    
+    # টেক্সট ওয়েলকাম পাঠানো
+    await update.message.reply_text(welcome_message, parse_mode="HTML")
+    
+    # স্টার্ট মেসেজের ক্ষেত্রে শুধু পরিষ্কার টেক্সট ভয়েস পাঠানো (ইমোজি ছাড়া)
+    try:
+        tts = gTTS(text=welcome_text_clean, lang='bn', slow=False)
+        voice_path = "start_audio.ogg"
+        tts.save(voice_path)
+        
+        with open(voice_path, 'rb') as audio:
+            await update.message.reply_voice(voice=audio)
+            
+        if os.path.exists(voice_path):
+            os.remove(voice_path)
+    except Exception as e:
+        logging.info(f"Voice error on start: {e}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    chat_id = update.effective_chat.id
     
     try:
-        bot.send_sticker(message.chat.id, STICKER_FILE_ID)
-    except Exception:
-        pass
-
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    text = message.text
-    chat_id = message.chat.id
-    
-    if text == "🚀 Start WinGo 30S" or text == "🚀 Start WinGo 1M":
-        mode = "30S" if "30S" in text else "1M"
+        # মেসেজ পাওয়ার সাথে সাথে চ্যাটে টাইপিং স্ট্যাটাস দেখানো
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         
-        if game_state[mode]['active']:
-            bot.send_message(chat_id, f"⚠️ **ANTOR VIP ({mode})** is already running!", parse_mode="Markdown")
-            return
-            
-        game_state[mode]['active'] = True
-        bot.send_message(chat_id, f"✅ **ANTOR VIP ({mode})** auto prediction started successfully! It will run automatically.", parse_mode="Markdown")
+        # টাইপিংয়ের জন্য ১.৫ সেকেন্ডের বিরতি রাখা
+        await asyncio.sleep(1.5)
         
-        def send_auto_predictions():
-            last_p = ""
-            while game_state[mode]['active']:
-                info = game_state[mode]
-                if info['period'] != last_p:
-                    last_p = info['period']
-                    cycle = 30 if mode == "30S" else 60
-                    remain = cycle - (int(time.time()) % cycle)
-                    
-                    # এখানে **ANTOR VIP** লেখাটি মোটা করা হয়েছে এবং কোন মার্কেটে সিগন্যাল দেওয়া হচ্ছে তা উল্লেখ করা হয়েছে
-                    msg = (
-                        f"⚡ **`ANTOR VIP` AUTO PREDICTION ({mode})** ⚡\n\n"
-                        f"📌 Market: `WinGo {mode}`\n"
-                        f"📌 Period: `{info['period']}`\n"
-                        f"⏳ Countdown: `00:{remain:02d}` Sec\n"
-                        f"🔮 Prediction: *{info['pred']}*\n\n"
-                        f"Status: Live Running 🚀"
-                    )
-                    
-                    try:
-                        bot.send_sticker(chat_id, STICKER_FILE_ID)
-                        bot.send_message(chat_id, msg, parse_mode="Markdown")
-                    except Exception:
-                        bot.send_message(chat_id, msg, parse_mode="Markdown")
-                        
-                time.sleep(2)
-                
-        threading.Thread(target=send_auto_predictions, daemon=True).start()
-
-    elif text == "⏹️ Stop WinGo 30S" or text == "⏹️ Stop WinGo 1M":
-        mode = "30S" if "30S" in text else "1M"
-        game_state[mode]['active'] = False
-        bot.send_message(chat_id, f"⏹️ **ANTOR VIP ({mode})** auto prediction has been stopped.", parse_mode="Markdown")
-        
-    elif text == "📊 30S History & Stats" or text == "📊 1M History & Stats":
-        mode = "30S" if "30S" in text else "1M"
-        state = game_state[mode]
-        total = state['wins'] + state['losses']
-        win_rate = (state['wins'] / total * 100) if total > 0 else 0
-        
-        hist_text = (
-            f"📊 **`ANTOR VIP` WIN & LOSS STATS ({mode})** 📊\n"
-            f"🎯 Total Wins: {state['wins']} | Losses: {state['losses']}\n"
-            f"⭐ Accuracy Rate: `{win_rate:.1f}%`\n\n"
+        # Groq API এর মাধ্যমে উত্তর জেনারেট করা
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an advanced, smart, and helpful AI assistant. Always use relevant and attractive emojis throughout your responses based on the context of the conversation. If anyone asks who created you, who made you, or about your creator, always proudly and respectfully say: 'আমাকে অন্তর তৈরি করেছে। এই বোটটি বানানোর জন্য উনি অনেক পরিশ্রম ও কষ্ট করেছেন। 💻🔥' Do not add random descriptions of smiling, facial expressions, or laughing. Answer accurately and directly, provide clean code when requested, and handle user queries regardless of casing."
+                },
+                {
+                    "role": "user",
+                    "content": user_message,
+                }
+            ],
+            model="openai/gpt-oss-120b",
         )
-        for h in state['history'][:12]:
-            hist_text += f"Period: {h['period']} | Pred: {h['pred']} | Result: {h['res']} | {h['status']}\n"
-        bot.send_message(chat_id, hist_text, parse_mode="Markdown")
+        
+        raw_response = chat_completion.choices[0].message.content
+        
+        # বড় টেক্সট হলে ট্রিম করা
+        if len(raw_response) > 4000:
+            raw_response = raw_response[:4000] + "\n\n*(উত্তরটি দীর্ঘ হওয়ায় কিছুটা সংক্ষিপ্ত করা হলো)*"
 
-if __name__ == "__main__":
-    print("Antor Bot with Full Auto Loop is running...")
-    bot.infinity_polling()
+        # HTML ট্যাগ ব্যবহার করে নিশ্চিতভাবে মোটা (Bold) অক্ষরে হেডার যুক্ত করা
+        bot_response = f"<b>🤖 AI Assistant</b>\n\n{raw_response}"
+
+        # HTML ফরম্যাট ব্যবহার করে টেক্সট উত্তর পাঠানো
+        await update.message.reply_text(bot_response, parse_mode="HTML")
+        
+        # ছোটখাটো প্রশ্নের ক্ষেত্রে টেক্সটের পাশাপাশি ভয়েস মেসেজ পাঠানো (ইমোজি বাদ দিয়ে)
+        if len(user_message.split()) <= 10 and len(raw_response) < 300:
+            clean_voice_text = remove_emojis(raw_response)
+            tts = gTTS(text=clean_voice_text, lang='bn', slow=False)
+            voice_path = "response_audio.ogg"
+            tts.save(voice_path)
+            
+            with open(voice_path, 'rb') as audio:
+                await update.message.reply_voice(voice=audio)
+                
+            if os.path.exists(voice_path):
+                os.remove(voice_path)
+            
+    except Exception as e:
+        error_reply = "<b>🤖 AI Assistant</b>\n\nআরে ভাই একটু ফুরসত দাও! 🛜 নেটওয়ার্ক স্লো থাকার কারণে মাথা ঘুরে গেছে, একটু পরে আবার ট্রাই করো তো দেখি! 😅"
+        await update.message.reply_text(error_reply, parse_mode="HTML")
+
+def main():
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # স্টার্ট কমান্ড হ্যান্ডলার
+    application.add_handler(CommandHandler("start", start))
+    
+    # সাধারণ টেক্সট মেসেজ ফিল্টার হ্যান্ডলার
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    # বোট চালু করা
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
