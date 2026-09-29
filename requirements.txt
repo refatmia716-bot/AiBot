@@ -1,4 +1,4 @@
-telegram-bot
+python-telegram-bot
 groq
 gtts
 flask
