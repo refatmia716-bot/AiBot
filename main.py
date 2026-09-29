@@ -8,12 +8,12 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 from groq import Groq
 from gtts import gTTS
 
-# সরাসরি পোর্টের সাথে ফ্লাস্ক সার্ভার সেটআপ (রেন্ডার যাতে সাথে সাথে পোর্ট পেয়ে যায়)
-app = Flask('')
+# রেন্ডারের ফ্রি ওয়েব সার্ভিসের জন্য ফ্লাস্ক অ্যাপ (পোর্ট ধরে রাখার জন্য)
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running live!"
+    return "Bot is active and running!"
 
 # লগিং সেটআপ
 logging.basicConfig(
@@ -28,6 +28,7 @@ GROQ_API_KEY = "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"
 # Groq ক্লায়েন্ট ইনিশিয়ালাইজ করুন
 client = Groq(api_key=GROQ_API_KEY)
 
+# টেক্সট থেকে ইমোজি রিমুভ করার ফাংশন যাতে ভয়েসে ইমোজি না পড়ে
 def remove_emojis(text):
     emoji_pattern = re.compile(
         r"["
@@ -59,6 +60,7 @@ def remove_emojis(text):
     )
     return emoji_pattern.sub(r'', text)
 
+# নতুন ইউজার বোট স্টার্ট করলে সুন্দর ও আকর্ষণীয় টেক্সট এবং ভয়েস ওয়েলকাম মেসেজ পাঠানো
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text_clean = "স্বাগতম! আমি আপনার ডেডিকেটেড এআই অ্যাসিস্ট্যান্ট। কোডিং বা যেকোনো সমস্যায় আমাকে নির্দ্বিধায় বলতে পারেন। আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
     
@@ -68,6 +70,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💻 কোডিং, 🛠️ টেকনিক্যাল সমস্যা সমাধান কিংবা 🧠 যেকোনো প্রশ্ন—যেকোনো প্রয়োজনে আমাকে নির্দ্বিধায় বলতে পারেন। বলুন, আজ আপনাকে কীভাবে সাহায্য করতে পারি? 🚀✨"
     )
     
+    # টেক্সট ওয়েলকাম পাঠানো
     await update.message.reply_text(welcome_message, parse_mode="HTML")
     
     try:
@@ -88,9 +91,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     try:
+        # মেসেজ পাওয়ার সাথে সাথে চ্যাটে টাইপিং স্ট্যাটাস দেখানো
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         await asyncio.sleep(1.5)
         
+        # Groq API এর মাধ্যমে উত্তর জেনারেট করা (আপনার নাম 'অন্তর' সম্পর্কিত নিয়মসহ)
         chat_completion = client.chat.completions.create(
             messages=[
                 {
@@ -135,9 +140,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    # পোলিং স্টার্ট করার আগে ফ্লাস্ক পোর্ট বাইন্ড করার জন্য রেন্ডারের পোর্ট ভেরিয়েবল চেক করবে
-    # তবে যেহেতু পাইথন বট সাধারণত একসাথে ফ্লাস্ক এবং পোলিং দুটো লুপ একসাথে চালাতে গিটহাবে ঝামেলা করে, 
-    # তাই রেন্ডারে ফ্রি ওয়েব সার্ভিসের জন্য নিচের কমান্ডটি ব্যবহার করতে হবে: gunicorn main:app
     application.run_polling()
 
 if __name__ == '__main__':
